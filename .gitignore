@@ -1,0 +1,7 @@
+__pycache__/
+.vscode/
+classify_data/
+detect_data/
+data/
+label_data/
+runs/
