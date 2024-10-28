@@ -325,6 +325,8 @@ def main():
     else:
         validate(val_loader, model, device=device)
     print("Training Finished, Best Metric:", max_metric)
+    # # 用于可选的继续训练
+    # breakpoint()
     writer.close()
 
 
@@ -332,7 +334,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--device", type=str, default="cuda")
-    parser.add_argument("--batch_size", type=int, default=16)
+    parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--pretrained", type=str, default=None)
     parser.add_argument("--seed", type=int, default=None)

@@ -24,8 +24,8 @@ def get_params_by_filename(filename):
 
 
 class ClassifyDataset(Dataset):
-    FREQ_LEN = 128
-    DOWN_SAMPLE = 100
+    FREQ_LEN = 1
+    DOWN_SAMPLE = 1
     SHAPE = (FREQ_LEN, DATA_CONFIG.shape[0] // DOWN_SAMPLE, DATA_CONFIG.shape[1])
 
     def __init__(self, root, label_list: list[str], transform: Transform | None = None):

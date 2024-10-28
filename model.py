@@ -1,6 +1,46 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
+
+from utils import DWT1DFor2DForward
+
+
+class SEBlock(nn.Module):
+    def __init__(self, in_channels, reduction=16):
+        super().__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Sequential(
+            nn.Linear(in_channels, in_channels // reduction),
+            nn.ReLU(inplace=True),
+            nn.Linear(in_channels // reduction, in_channels),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x):
+        b, c, _, _ = x.size()
+        y = self.avg_pool(x).view(b, c)
+        y = self.fc(y).view(b, c, 1, 1)
+        return x * y
+
+
+class ECA_block(nn.Module):
+    def __init__(self, channel, b=1, gamma=2):
+        super(ECA_block, self).__init__()
+        kernel_size = int(abs((math.log(channel, 2) + b) / gamma))
+        kernel_size = kernel_size if kernel_size % 2 else kernel_size + 1
+
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.conv = nn.Conv1d(
+            1, 1, kernel_size=kernel_size, padding=(kernel_size - 1) // 2, bias=False
+        )
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        y = self.avg_pool(x)
+        y = self.conv(y.squeeze(-1).transpose(-1, -2)).transpose(-1, -2).unsqueeze(-1)
+        y = self.sigmoid(y)
+        return x * y.expand_as(x)
 
 
 class AsymmetricInceptionBlock(nn.Module):
@@ -94,7 +134,26 @@ class ResidualBlock(nn.Module):
         return out
 
 
-class DASDownsampleBlock(nn.Module):
+class DownWtOneAxisBlock(nn.Module):
+    def __init__(self, in_ch, out_ch, axis=3, J=1):
+        super().__init__()
+        self.J = J
+        self.wt = DWT1DFor2DForward(wave="haar", mode="zero", dim=axis)
+        self.conv_bn_relu = nn.Sequential(
+            nn.Conv2d(in_ch * 2**J, out_ch, kernel_size=1, stride=1),
+            nn.BatchNorm2d(out_ch),
+            nn.ReLU(inplace=True),
+        )
+
+    def forward(self, x):
+        for _ in range(self.J):
+            yl, yh = self.wt(x)
+            x = torch.cat([yl, yh], dim=1)
+        x = self.conv_bn_relu(x)
+        return x
+
+
+class InceptionDownsampleBlock(nn.Module):
     KERNEL_SIZES = [(1, 1), (3, 3), (7, 7)]
 
     def __init__(
@@ -123,22 +182,6 @@ class DASDownsampleBlock(nn.Module):
         return out
 
 
-class DASDownsample(nn.Module):
-    def __init__(self, in_channels: int):
-        super().__init__()
-        self.inception_blocks = nn.Sequential(
-            # bs x 64 x 100 x 20
-            DASDownsampleBlock(in_channels, 64, 0.2),
-            # bs x 64 x 50 x 20
-            DASDownsampleBlock(64, 64, 0.5),
-            # bs x 64 x 25 x 20
-        )
-
-    def forward(self, x):
-        out = self.inception_blocks(x)
-        return out
-
-
 class ClassifyNet(nn.Module):
     def __init__(self):
         super().__init__()
@@ -159,17 +202,79 @@ class ClassifyNet(nn.Module):
 class DASNet(ClassifyNet):
     def __init__(self, in_channels, num_classes):
         super().__init__()
-        self.downsample = DASDownsample(in_channels)
-        # bs x 64 x 25 x 20
+        self.downsample = nn.Sequential(
+            # version 1
+            # # bs x 1 x 10000 x 20
+            # DASDownsampleBlock(in_channels, 64, 0.2, 4),
+            # # bs x 64 x 2500 x 20
+            # DASDownsampleBlock(64, 64, 0.2, 5),
+            # # bs x 64 x 500 x 20
+            # DASDownsampleBlock(64, 64, 0.2, 4),
+            # # bs x 64 x 125 x 20
+            # DASDownsampleBlock(64, 64, 0.2, 5),
+            # # bs x 64 x 25 x 20
+            # version 2
+            # bs x 1 x 10000 x 20
+            # ResidualBlock(in_channels, 2, stride=(2, 1)),
+            # # bs x 2 x 5000 x 20
+            # ResidualBlock(2, 4, stride=(2, 1)),
+            # # bs x 4 x 2500 x 20
+            # ResidualBlock(4, 8, stride=(2, 1)),
+            # # bs x 8 x 1250 x 20
+            # ResidualBlock(8, 16, stride=(2, 1)),
+            # # bs x 16 x 625 x 20
+            # ResidualBlock(16, 32, stride=(2, 1)),
+            # # bs x 32 x 312 x 20
+            # ResidualBlock(32, 64, stride=(2, 1)),
+            # # bs x 64 x 156 x 20
+            # ResidualBlock(64, 64, stride=(2, 1)),
+            # # bs x 64 x 78 x 20
+            # ResidualBlock(64, 64, stride=(2, 1)),
+            # # bs x 64 x 39 x 20
+            # ResidualBlock(64, 64, stride=(2, 1)),
+            # bs x 64 x 19 x 20
+            # version 3
+            # # bs x 1 x 10000 x 20
+            # DownWtOneAxisBlock(in_channels, 2, axis=2),
+            # # bs x 2 x 5000 x 20
+            # DownWtOneAxisBlock(2, 4, axis=2),
+            # # bs x 4 x 2500 x 20
+            # DownWtOneAxisBlock(4, 8, axis=2),
+            # # bs x 8 x 1250 x 20
+            # DownWtOneAxisBlock(8, 16, axis=2),
+            # # bs x 16 x 625 x 20
+            # DownWtOneAxisBlock(16, 32, axis=2),
+            # # bs x 32 x 313 x 20
+            # DownWtOneAxisBlock(32, 64, axis=2),
+            # # bs x 64 x 157 x 20
+            # DownWtOneAxisBlock(64, 64, axis=2),
+            # # bs x 64 x 79 x 20
+            # DownWtOneAxisBlock(64, 64, axis=2),
+            # # bs x 64 x 40 x 20
+            # DownWtOneAxisBlock(64, 64, axis=2),
+            # # bs x 64 x 20 x 20
+            # faster version 3
+            # bs x 1 x 10000 x 20
+            DownWtOneAxisBlock(in_channels, 4, axis=2, J=2),
+            # bs x 4 x 2500 x 20
+            DownWtOneAxisBlock(4, 16, axis=2, J=2),
+            # bs x 16 x 625 x 20
+            DownWtOneAxisBlock(16, 64, axis=2, J=2),
+            # bs x 64 x 157 x 20
+            DownWtOneAxisBlock(64, 64, axis=2, J=2),
+            # bs x 64 x 40 x 20
+            DownWtOneAxisBlock(64, 64, axis=2, J=1),
+            # bs x 64 x 20 x 20
+        )
         self.backbone = nn.Sequential(
             ResidualBlock(64, 256),
-            ResidualBlock(256, 64),
-            ResidualBlock(64, 32),
+            ResidualBlock(256, 512),
+            ResidualBlock(512, 256),
         )
         # bs x 32 x 25 x 20
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         # bs x 32 x 1 x 1
-        self.fc = nn.Linear(32, num_classes)
+        self.fc = nn.Linear(256, num_classes)
 
     def feature(self, x):
         out = self.downsample(x)
