@@ -1,46 +1,9 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
 
 from utils import DWT1DFor2DForward
-
-
-class SEBlock(nn.Module):
-    def __init__(self, in_channels, reduction=16):
-        super().__init__()
-        self.avg_pool = nn.AdaptiveAvgPool2d(1)
-        self.fc = nn.Sequential(
-            nn.Linear(in_channels, in_channels // reduction),
-            nn.ReLU(inplace=True),
-            nn.Linear(in_channels // reduction, in_channels),
-            nn.Sigmoid(),
-        )
-
-    def forward(self, x):
-        b, c, _, _ = x.size()
-        y = self.avg_pool(x).view(b, c)
-        y = self.fc(y).view(b, c, 1, 1)
-        return x * y
-
-
-class ECA_block(nn.Module):
-    def __init__(self, channel, b=1, gamma=2):
-        super(ECA_block, self).__init__()
-        kernel_size = int(abs((math.log(channel, 2) + b) / gamma))
-        kernel_size = kernel_size if kernel_size % 2 else kernel_size + 1
-
-        self.avg_pool = nn.AdaptiveAvgPool2d(1)
-        self.conv = nn.Conv1d(
-            1, 1, kernel_size=kernel_size, padding=(kernel_size - 1) // 2, bias=False
-        )
-        self.sigmoid = nn.Sigmoid()
-
-    def forward(self, x):
-        y = self.avg_pool(x)
-        y = self.conv(y.squeeze(-1).transpose(-1, -2)).transpose(-1, -2).unsqueeze(-1)
-        y = self.sigmoid(y)
-        return x * y.expand_as(x)
+from attention import ECABlock, SEBlock
 
 
 class AsymmetricInceptionBlock(nn.Module):
@@ -119,6 +82,7 @@ class ResidualBlock(nn.Module):
                 ),
                 nn.BatchNorm2d(out_channels),
             )
+        # self.attention = ECABlock(out_channels)
 
     def forward(self, x):
         identity = x
@@ -131,6 +95,7 @@ class ResidualBlock(nn.Module):
             identity = self.downsample(x)
         out += identity
         out = F.relu(out, inplace=True)
+        # out = self.attention(out)
         return out
 
 
@@ -144,12 +109,14 @@ class DownWtOneAxisBlock(nn.Module):
             nn.BatchNorm2d(out_ch),
             nn.ReLU(inplace=True),
         )
+        # self.attention = ECABlock(out_ch)
 
     def forward(self, x):
         for _ in range(self.J):
             yl, yh = self.wt(x)
             x = torch.cat([yl, yh], dim=1)
         x = self.conv_bn_relu(x)
+        # x = self.attention(x)
         return x
 
 
@@ -258,18 +225,22 @@ class DASNet(ClassifyNet):
             DownWtOneAxisBlock(in_channels, 4, axis=2, J=2),
             # bs x 4 x 2500 x 20
             DownWtOneAxisBlock(4, 16, axis=2, J=2),
+            SEBlock(16),
             # bs x 16 x 625 x 20
             DownWtOneAxisBlock(16, 64, axis=2, J=2),
+            SEBlock(64),
             # bs x 64 x 157 x 20
             DownWtOneAxisBlock(64, 64, axis=2, J=2),
+            SEBlock(64),
             # bs x 64 x 40 x 20
             DownWtOneAxisBlock(64, 64, axis=2, J=1),
+            SEBlock(64),
             # bs x 64 x 20 x 20
         )
         self.backbone = nn.Sequential(
             ResidualBlock(64, 256),
-            ResidualBlock(256, 512),
-            ResidualBlock(512, 256),
+            ResidualBlock(256, 256),
+            ResidualBlock(256, 256),
         )
         # bs x 32 x 25 x 20
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))

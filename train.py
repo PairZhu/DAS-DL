@@ -4,7 +4,7 @@ import os
 
 # 三次训练
 train_args = [
-    # "nofreqFasterDWT --epochs 100",
+    "large_eca_down --epochs 100",
     *(["--epochs 100"] * 4),
 ]
 
