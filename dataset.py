@@ -9,7 +9,6 @@ from tqdm import tqdm
 import enhance
 from config import DATA_CONFIG
 from enhance import ProbabilityTransform, RandomChoiceTransform, Transform
-from utils import short_time_fourier_transform
 
 
 def get_params_by_filename(filename):
@@ -24,9 +23,8 @@ def get_params_by_filename(filename):
 
 
 class ClassifyDataset(Dataset):
-    FREQ_LEN = 1
     DOWN_SAMPLE = 1
-    SHAPE = (FREQ_LEN, DATA_CONFIG.shape[0] // DOWN_SAMPLE, DATA_CONFIG.shape[1])
+    SHAPE = (1, DATA_CONFIG.shape[0] // DOWN_SAMPLE, DATA_CONFIG.shape[1])
 
     def __init__(self, root, label_list: list[str], transform: Transform | None = None):
         self.root = root
@@ -41,52 +39,18 @@ class ClassifyDataset(Dataset):
     def __len__(self):
         return len(self.files)
 
-    def _save_cache(self, idx, data):
-        cache_path = os.path.join(self.root, ".cache", str(self.SHAPE))
-        os.makedirs(cache_path, exist_ok=True)
-        np.save(os.path.join(cache_path, f"{idx}.npy"), data)
-
-    def _read_cache(self, idx):
-        cache_path = os.path.join(self.root, ".cache", str(self.SHAPE))
-        if osp.exists(osp.join(cache_path, f"{idx}.npy")):
-            return np.load(osp.join(cache_path, f"{idx}.npy"))
-        return None
-
     def __getitem__(self, idx):
         label = self.labels[idx]
-        if not self.transform and self.FREQ_LEN > 1:
-            data = self._read_cache(idx)
-            if data is not None:
-                data = torch.from_numpy(np.ascontiguousarray(data)).float()
-                label = torch.tensor(label, dtype=torch.long)
-                return data, label
         file = self.files[idx]
         data = np.load(osp.join(self.root, file))
         if self.transform:
             data = self.transform(data)
-        if self.FREQ_LEN > 1:
-            # 对数据进行短时傅里叶变换，将频率维度视为通道维度
-            _, data = short_time_fourier_transform(
-                data,
-                window_size=self.FREQ_LEN * 2,
-                down_sample=self.DOWN_SAMPLE,
-                axis=0,
-            )
-            # 去除最高频率
-            data = data[: self.FREQ_LEN]
-            # 修改维度顺序 [freq, space, time] -> [freq, time, space]
-            data = np.moveaxis(data, 1, 2)
-            # 取绝对值
-            data = np.abs(data)
-        else:
-            # 下采样
-            data = data[:: self.DOWN_SAMPLE]
-            # 增加通道维度
-            data = data[np.newaxis]
+        # 下采样
+        data = data[:: self.DOWN_SAMPLE]
+        # 增加通道维度
+        data = data[np.newaxis]
 
         assert data.shape == self.SHAPE
-        if not self.transform and self.FREQ_LEN > 1:
-            self._save_cache(idx, data)
         data = torch.from_numpy(np.ascontiguousarray(data)).float()
         label = torch.tensor(label, dtype=torch.long)
         return data, label

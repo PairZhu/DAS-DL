@@ -16,14 +16,13 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 import thop
 import copy
-from sklearn.manifold import TSNE
 from sklearn.metrics import classification_report, f1_score, confusion_matrix
 
 from dataset import ClassifyDataset
 import enhance
 from enhance import RandomChoiceTransform, ProbabilityTransform
 from model import DASNet, ClassifyNet
-from utils import ReservoirSampler
+from utils import ReservoirSampler, visualize_cam
 
 LABEL_LIST = ["背景", "敲击", "攀爬", "连续振动"]
 # 兼容中文
@@ -68,7 +67,7 @@ def train(
             optimizer.step()
             total_loss += loss.item()
         print(
-            f"Epoch {epoch}, Loss: {total_loss/len(data_loader)}, Accuracy: {correct / total}"
+            f"Epoch {epoch}/{epochs[-1]}, Loss: {total_loss/len(data_loader):.4f}, Accuracy: {correct / total:.4f}"
         )
         writer.add_scalar("Loss/train", total_loss / len(data_loader), epoch)
         writer.add_scalar("Accuracy/train", correct / total, epoch)
@@ -83,23 +82,15 @@ def validate(
     model: ClassifyNet,
     device: torch.device | str = "cuda",
     epoch: int = 0,
-    each_sample: int = 50,
 ):
     model = model.to(device)
     model.eval()
     all_preds = []
     ground_truths = []
-    # 各类随机采样一部分数据用于可视化
-    feature_samplers = [ReservoirSampler(each_sample) for _ in LABEL_LIST]
     # 各类随机采样一个数据用于CAM可视化激活图
     cam_samplers = [ReservoirSampler(1) for _ in LABEL_LIST]
     for inputs, labels in tqdm(data_loader, desc="Validating"):
         features = model.feature(inputs.to(device))
-        # 采样的数据保存到列表中
-        for i in range(len(labels)):
-            label = labels[i].item()
-            assert isinstance(label, int)
-            feature_samplers[label].process(features[i])
         outputs = model.classify(features)
         _, predicted = torch.max(outputs.data, 1)
         for i in range(len(labels)):
@@ -117,6 +108,7 @@ def validate(
             all_preds,
             target_names=LABEL_LIST,
             zero_division=0,
+            digits=4,
         )
     )
     f1_macro = f1_score(ground_truths, all_preds, average="macro")
@@ -139,68 +131,19 @@ def validate(
     assert fig is not None
     writer.add_figure("Confusion Matrix", fig, global_step=epoch)
 
-    # TSNE可视化特征
-    sample_features: list[torch.Tensor] = []
-    for sampler in feature_samplers:
-        samples = [sample.view(-1) for sample in sampler.samples]
-        sample_features.extend(samples)
-    feat_embed = TSNE(n_components=2, random_state=0).fit_transform(
-        torch.stack(sample_features, dim=0).cpu().numpy()
-    )
-    fig, ax = plt.subplots()
-    for i, label_str in enumerate(LABEL_LIST):
-        start = i * each_sample
-        end = (i + 1) * each_sample
-        ax.scatter(feat_embed[start:end, 0], feat_embed[start:end, 1], label=label_str)
-    ax.legend()
-    plt.close(fig)
-    writer.add_figure("TSNE", fig, global_step=epoch)
-
     # CAM可视化
     for truth, sampler in enumerate(cam_samplers):
-        nimgs = len(LABEL_LIST) + 1
-        nrows = int(nimgs**0.5)
-        ncols = int(np.ceil(nimgs / nrows))
-        fig, axes = plt.subplots(nrows, ncols)
-        axes = axes.flatten()
         input_tensor, cam_tensor_list, predicted_tensor = sampler.samples[0]
-        # input_tensor 对前5个通道维度求均值（低频通道），得到灰度图
-        input_data = input_tensor[:5].mean(dim=0).cpu().numpy()
-        predicted = predicted_tensor.item()
-        # 对数变换，增强对比度
-        input_data = np.abs(input_data, out=input_data)
-        input_data = np.log1p(input_data, out=input_data)
-        axes[0].imshow(
-            input_data,
-            cmap="jet",
-            vmin=0,
-            vmax=np.log1p(1000),
-            aspect="auto",
-            interpolation="bilinear",
-        )
-        axes[0].axis("off")
+        input_data = input_tensor.mean(dim=0).cpu().numpy()
+        fig, axes = visualize_cam(input_data, cam_tensor_list)
         input_idx = sampler.idxs[0]
         axes[0].set_title(f"Input {input_idx}")
-        # 生成CAM
-        vmax = max(cam.max().item() for cam in cam_tensor_list)
-        vmin = min(cam.min().item() for cam in cam_tensor_list)
-        for class_idx, cam_tensor in enumerate(cam_tensor_list):
-            cam = cam_tensor.cpu().numpy()
-            axes[class_idx + 1].imshow(
-                cam,
-                cmap="jet",
-                vmin=vmin,
-                vmax=vmax,
-                aspect="auto",
-                interpolation="bilinear",
-            )
-            axes[class_idx + 1].axis("off")
-            if class_idx == predicted:
-                axes[class_idx + 1].set_title(f"{LABEL_LIST[class_idx]}(Predicted)")
+        predicted = predicted_tensor.item()
+        for i, ax in enumerate(axes[1:]):
+            if i == predicted:
+                ax.set_title(f"{LABEL_LIST[i]}(Predicted)")
             else:
-                axes[class_idx + 1].set_title(f"{LABEL_LIST[class_idx]}")
-        for i in range(len(cam_tensor_list) + 1, nrows * ncols):
-            fig.delaxes(axes.flatten()[i])
+                ax.set_title(f"{LABEL_LIST[i]}")
         plt.tight_layout()
         plt.close(fig)
         writer.add_figure(f"CAM/{LABEL_LIST[truth]}", fig, global_step=epoch)
@@ -210,8 +153,8 @@ def validate(
 
 
 def main():
-    model = DASNet(ClassifyDataset.FREQ_LEN, len(LABEL_LIST))
-    optimizer = optim.Adam(model.parameters(), lr=1e-6, weight_decay=1e-7)
+    model = DASNet(1, len(LABEL_LIST))
+    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.lr / 10)
 
     if args.pretrained:
         checkpoint = torch.load(args.pretrained, map_location="cpu")
@@ -231,6 +174,11 @@ def main():
     # 计算模型参数和FLOPs，拷贝一份model，因为profile会修改模型
     flops, params = thop.profile(copy.deepcopy(model), inputs=(dummy_input,))[0:2]
     print(f"FLOPs: {flops/1e9:.2f}G, Params: {params/1e6:.2f}M")
+    writer.add_text("Profile", f"FLOPs: {flops/1e9:.2f}G, Params: {params/1e6:.2f}M")
+    writer.add_text(
+        "Config",
+        f"Batch Size: {args.batch_size}, Learning Rate: {args.lr}, Seed: {args.seed}",
+    )
     # 可视化模型结构
     writer.add_graph(model, (dummy_input,))
 
@@ -308,10 +256,11 @@ def main():
         if metric > max_metric:
             max_metric = metric
             save_model("best.pth", epoch)
-            print("Best Model Saved")
+            print(f"Best Model Saved, Metric: {max_metric:.4f}")
         if epoch % 5 == 0 and epoch > 0 or epoch == begin_epoch + args.epochs - 1:
             save_model("latest.pth", epoch)
             print("Latest Model Saved")
+        writer.add_scalar("Metric/Best", max_metric, epoch)
 
     if args.epochs > 0:
         train(
@@ -335,9 +284,10 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--batch_size", type=int, default=32)
-    parser.add_argument("--num_workers", type=int, default=8)
+    parser.add_argument("--num_workers", type=int, default=5)
     parser.add_argument("--pretrained", type=str, default=None)
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--lr", type=float, default=1e-7)
     parser.add_argument("name", type=str, default=None, nargs="?")
 
     args = parser.parse_args()

@@ -41,5 +41,5 @@ DATA_CONFIG = _DataConfig(
     time=10,
     space=20,
     type="<f4",
-    label_map={"搭梯子": "敲击", "攀爬-弱信号": "未知"},
+    label_map={"搭梯子": "未知"},
 )
