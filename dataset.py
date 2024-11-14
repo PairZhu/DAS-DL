@@ -56,6 +56,19 @@ class ClassifyDataset(Dataset):
         return data, label
 
 
+# 检查两个文件的时空位置是否有重合
+def check_overlap(file1, file2):
+    begin1, top1, _ = get_params_by_filename(file1)
+    begin2, top2, _ = get_params_by_filename(file2)
+    end1 = begin1 + DATA_CONFIG.time * 1000
+    end2 = begin2 + DATA_CONFIG.time * 1000
+    bottom1 = top1 + DATA_CONFIG.space
+    bottom2 = top2 + DATA_CONFIG.space
+    x_overlap = begin1 < end2 and end1 > begin2
+    y_overlap = top1 < bottom2 and bottom1 > top2
+    return x_overlap, y_overlap
+
+
 def split_files(files, ratio=0.8):
     label_files = {}
     if isinstance(files, dict):
@@ -65,7 +78,7 @@ def split_files(files, ratio=0.8):
         if len(labels) > 1:
             continue
         else:
-            label = labels[0]
+            label = labels[0].split("-")[0]
         if label not in label_files:
             label_files[label] = []
         label_files[label].append((timestamp, file))
@@ -82,6 +95,24 @@ def split_files(files, ratio=0.8):
         split_idx = int(len(files) * ratio)
         train_files[label] = [file for _, file in files[:split_idx]]
         test_files[label] = [file for _, file in files[split_idx:]]
+        filtered_files = []
+        for test_file in test_files[label]:
+            overlaped = False
+            for train_file in reversed(train_files[label]):
+                x_overlap, y_overlap = check_overlap(train_file, test_file)
+                # 如果x轴不重合说明之后的文件也不会重合
+                if not x_overlap:
+                    break
+                # 如果y轴不重合则继续检查下一个文件
+                if not y_overlap:
+                    continue
+                # 如果有重合则后面不用再检查
+                else:
+                    overlaped = True
+                    break
+            if not overlaped:
+                filtered_files.append(test_file)
+        test_files[label] = filtered_files
 
     return train_files, test_files
 
@@ -141,6 +172,12 @@ def balance_files(root, max_len=None, min_enhance=0.2):
             np.save(osp.join(root, new_file), data)
 
 
+def remove_remark(file):
+    base, ext = osp.splitext(file)
+    base = base.rsplit("-", 1)[0]
+    return base + ext
+
+
 if __name__ == "__main__":
     source_files = [f for f in os.listdir("classify_data") if f.endswith(".npy")]
     train_files, other_files = split_files(source_files, 0.6)
@@ -160,6 +197,10 @@ if __name__ == "__main__":
     print("Val: {}".format({label: len(files) for label, files in val_files.items()}))
     print("Test: {}".format({label: len(files) for label, files in test_files.items()}))
 
+    confirm = input("Continue? (y/n): ")
+    if confirm != "y":
+        exit()
+
     os.makedirs(train_path, exist_ok=True)
     os.makedirs(val_path, exist_ok=True)
     os.makedirs(test_path, exist_ok=True)
@@ -167,17 +208,20 @@ if __name__ == "__main__":
     with tqdm(total=train_file_count, desc="Link Train Files") as pbar:
         for label, files in train_files.items():
             for file in files:
-                os.link(osp.join("classify_data", file), osp.join(train_path, file))
+                new_file = remove_remark(file)
+                os.link(osp.join("classify_data", file), osp.join(train_path, new_file))
                 pbar.update(1)
 
     with tqdm(total=val_file_count, desc="Link Val Files") as pbar:
         for label, files in val_files.items():
             for file in files:
-                os.link(osp.join("classify_data", file), osp.join(val_path, file))
+                new_file = remove_remark(file)
+                os.link(osp.join("classify_data", file), osp.join(val_path, new_file))
                 pbar.update(1)
 
     with tqdm(total=test_file_count, desc="Link Test Files") as pbar:
         for label, files in test_files.items():
             for file in files:
-                os.link(osp.join("classify_data", file), osp.join(test_path, file))
+                new_file = remove_remark(file)
+                os.link(osp.join("classify_data", file), osp.join(test_path, new_file))
                 pbar.update(1)

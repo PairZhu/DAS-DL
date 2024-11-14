@@ -25,13 +25,16 @@ from dataset import ClassifyDataset
 import enhance
 from enhance import RandomChoiceTransform, ProbabilityTransform
 from utils import ReservoirSampler, visualize_cam
+from pathlib import Path
 
 LABEL_LIST = ["背景", "敲击", "攀爬", "连续振动"]
-# 兼容中文
-plt.rcParams["font.sans-serif"] = ["SimHei"]
-plt.rcParams["axes.unicode_minus"] = False
+EN_LABEL_LIST = ["Background", "Knock", "Climb", "Construction"]
 # 启用cudnn加速
 torch.backends.cudnn.benchmark = True
+
+
+Label_record = []
+Mask_record = []
 
 
 def seed_everything(seed: int):
@@ -45,13 +48,13 @@ def train(
     data_loader: DataLoader,
     model: ClassifyNet,  # type: ignore
     optimizer: optim.Optimizer,
+    criterion: nn.Module,
     epochs: int | range,
     callback: Callable | None = None,
     device: torch.device | str = "cuda",
 ):
     model = model.to(device)
     model.train()
-    criterion = nn.CrossEntropyLoss()
     if isinstance(epochs, int):
         epochs = range(epochs)
     for epoch in epochs:
@@ -89,19 +92,34 @@ def validate(
     model.eval()
     all_preds = []
     ground_truths = []
-    # 各类随机采样一个数据用于CAM可视化激活图
-    cam_samplers = [ReservoirSampler(1) for _ in LABEL_LIST]
+
+    if args.visualize:
+        # 各类随机采样一个数据用于CAM可视化激活图
+        cam_samplers = [ReservoirSampler(1) for _ in LABEL_LIST]
+
+        # 注册hook，用于获取mask
+        def hook(module, input, output):
+            mask = torch.sigmoid(output).view(output.shape[0], output.shape[1])
+            Mask_record.extend(mask.detach().cpu().numpy())
+
+        hook = model.downsample[0].freq_attention.fc.register_forward_hook(hook)
+
     for inputs, labels in tqdm(data_loader, desc="Validating"):
         features = model.feature(inputs.to(device))
         outputs = model.classify(features)
         _, predicted = torch.max(outputs.data, 1)
-        for i in range(len(labels)):
-            label = labels[i].item()
-            assert isinstance(label, int)
-            cams = model.cam(features[i])
-            cam_samplers[label].process((inputs[i], cams, predicted[i]))
+        if args.visualize:
+            for i in range(len(labels)):
+                label = labels[i].item()
+                Label_record.append(label)
+                assert isinstance(label, int)
+                cams = model.cam(features[i])
+                cam_samplers[label].process((inputs[i], cams, predicted[i]))
         all_preds.extend(predicted.cpu().numpy())
         ground_truths.extend(labels.numpy())
+
+    if args.visualize:
+        hook.remove()
 
     # 分类报告
     print(
@@ -123,8 +141,8 @@ def validate(
     fig = sns.heatmap(
         cm,
         annot=True,
-        xticklabels=list(LABEL_LIST),
-        yticklabels=list(LABEL_LIST),
+        xticklabels=list(EN_LABEL_LIST),
+        yticklabels=list(EN_LABEL_LIST),
         cmap="Blues",
     ).get_figure()
     plt.xlabel("Predicted")
@@ -134,21 +152,22 @@ def validate(
     writer.add_figure("Confusion Matrix", fig, global_step=epoch)
 
     # CAM可视化
-    for truth, sampler in enumerate(cam_samplers):
-        input_tensor, cam_tensor_list, predicted_tensor = sampler.samples[0]
-        input_data = input_tensor.mean(dim=0).cpu().numpy()
-        fig, axes = visualize_cam(input_data, cam_tensor_list)
-        input_idx = sampler.idxs[0]
-        axes[0].set_title(f"Input {input_idx}")
-        predicted = predicted_tensor.item()
-        for i, ax in enumerate(axes[1:]):
-            if i == predicted:
-                ax.set_title(f"{LABEL_LIST[i]}(Predicted)")
-            else:
-                ax.set_title(f"{LABEL_LIST[i]}")
-        plt.tight_layout()
-        plt.close(fig)
-        writer.add_figure(f"CAM/{LABEL_LIST[truth]}", fig, global_step=epoch)
+    if args.visualize:
+        for truth, sampler in enumerate(cam_samplers):
+            input_tensor, cam_tensor_list, predicted_tensor = sampler.samples[0]
+            input_data = input_tensor.mean(dim=0).cpu().numpy()
+            fig, axes = visualize_cam(input_data, cam_tensor_list)
+            input_idx = sampler.idxs[0]
+            axes[0].set_title(f"Input {input_idx}")
+            predicted = predicted_tensor.item()
+            for i, ax in enumerate(axes[1:]):
+                if i == predicted:
+                    ax.set_title(f"{EN_LABEL_LIST[i]}(Predicted)")
+                else:
+                    ax.set_title(f"{EN_LABEL_LIST[i]}")
+            plt.tight_layout()
+            plt.close(fig)
+            writer.add_figure(f"CAM/{EN_LABEL_LIST[truth]}", fig, global_step=epoch)
 
     writer.flush()
     return f1_weighted
@@ -181,8 +200,6 @@ def main():
         "Config",
         f"Batch Size: {args.batch_size}, Learning Rate: {args.lr}, Seed: {args.seed}",
     )
-    # 可视化模型结构
-    writer.add_graph(model, (dummy_input,))
 
     trasform = ProbabilityTransform(  # noqa: F841
         [
@@ -209,7 +226,7 @@ def main():
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         pin_memory=True,
-        persistent_workers=True,
+        persistent_workers=True if args.num_workers > 0 else False,
     )
 
     train_dataset = ClassifyDataset(
@@ -235,7 +252,7 @@ def main():
         sampler=sampler,
         num_workers=args.num_workers,
         pin_memory=True,
-        persistent_workers=True,
+        persistent_workers=True if args.num_workers > 0 else False,
     )
 
     max_metric = 0
@@ -257,6 +274,14 @@ def main():
         metric = validate(val_loader, model, device=device, epoch=epoch)
         nonlocal max_metric
         if metric > max_metric:
+            # 如果原来的metric>0.9，则备份原来的模型
+            if max_metric > 0.9 and not osp.exists(
+                osp.join(log_dir, "checkpoints", f"best_{max_metric:.4f}.pth")
+            ):
+                os.rename(
+                    osp.join(log_dir, "checkpoints", "best.pth"),
+                    osp.join(log_dir, "checkpoints", f"best_{max_metric:.4f}.pth"),
+                )
             max_metric = metric
             save_model("best.pth", epoch)
             print(f"Best Model Saved, Metric: {max_metric:.4f}")
@@ -270,6 +295,7 @@ def main():
             train_loader,
             model,
             optimizer,
+            nn.CrossEntropyLoss(),
             range(begin_epoch, begin_epoch + args.epochs),
             callback=on_epoch_end,
             device=device,
@@ -312,7 +338,7 @@ class DummyWriter(SummaryWriter):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("-e", "--epochs", type=int, default=200)
+    parser.add_argument("-e", "--epochs", type=int, default=300)
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("-b", "--batch_size", type=int, default=32)
     parser.add_argument("-w", "--num_workers", type=int, default=5)
@@ -322,6 +348,7 @@ if __name__ == "__main__":
     parser.add_argument("--train", type=str, default=osp.join("data", "train"))
     parser.add_argument("--val", type=str, default=osp.join("data", "val"))
     parser.add_argument("-n", "--name", type=str, default="")
+    parser.add_argument("-V", "--visualize", action="store_true")
     parser.add_argument(
         "mode", type=str, choices=["train", "val"], default="train", nargs="?"
     )
@@ -332,26 +359,39 @@ if __name__ == "__main__":
     if args.name:
         name = f"{name}_{args.name}"
     log_dir = osp.join("runs", name)
-    print(f"Log Dir: {log_dir}, Open Tensorboard with `tensorboard --logdir {log_dir}`")
-    print("Open http://localhost:6006/ in your browser")
+    if args.mode == "train":
+        print(
+            f"Log Dir: {log_dir}, Open Tensorboard with `tensorboard --logdir {log_dir}`"
+        )
+        print("Open http://localhost:6006/ in your browser")
     # 强制设置seed，方便复现
     if args.seed is None:
         args.seed = random.randint(0, 1 << 32)
     seed_everything(args.seed)
-    # 读取log_dir下的model.py文件
-    if osp.exists(osp.join(log_dir, "model.py")):
-        # 动态加载model.py
-        print(f"Load 'model.py' from {log_dir}")
-        model_module = importlib.import_module("model", package=log_dir)
-        DASNet = model_module.DASNet
-        ClassifyNet = model_module.ClassifyNet
+    # 读取checkpoint下的model.py文件
+    if args.model:
+        model_path = osp.dirname(osp.dirname(args.model))
+        if osp.exists(osp.join(model_path, "model.py")):
+            # 动态加载model.py
+            print(f"Load 'model.py' from {model_path}")
+            module_import_path = Path(model_path).as_posix().replace("/", ".")
+            model_module = importlib.import_module(f"{module_import_path}.model")
+            DASNet = model_module.DASNet
+            ClassifyNet = model_module.ClassifyNet
     if args.mode == "train":
         writer = SummaryWriter(log_dir, flush_secs=10)
-        # 备份model.py
-        if not osp.exists(osp.join(log_dir, "model.py")):
-            shutil.copy("model.py", osp.join(log_dir, "model.py"))
+        # 备份model.py和stft_module.py
+        shutil.copy("model.py", osp.join(log_dir, "model.py"))
+        shutil.copy("stft_module.py", osp.join(log_dir, "stft_module.py"))
     else:
         writer = DummyWriter()
 
     main()
     writer.close()
+
+    if args.visualize:
+        assert len(Mask_record) == len(
+            Label_record
+        ), f"{len(Mask_record)} != {len(Label_record)}"
+        np.save("Mask_record.npy", Mask_record)
+        np.save("Label_record.npy", Label_record)

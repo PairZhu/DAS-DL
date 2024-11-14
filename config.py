@@ -30,6 +30,8 @@ class _DataConfig:
     space: int
     type: str
     label_map: dict
+    time_step: int
+    space_step: int
 
     @property
     def shape(self):
@@ -40,6 +42,8 @@ DATA_CONFIG = _DataConfig(
     downsample=5,
     time=10,
     space=20,
+    time_step=5000,  # 单位为原始数据的像素点
+    space_step=3,
     type="<f4",
     label_map={"搭梯子": "未知"},
 )

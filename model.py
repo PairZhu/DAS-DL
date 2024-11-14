@@ -4,8 +4,16 @@ import torch.nn.functional as F
 from typing import Type
 
 from dwt_module import DWTDownsample
-from stft_module import STFTDownsample
 from attention import ECABlock, SEBlock
+import os.path as osp
+
+module_path = osp.relpath(osp.dirname(__file__))
+if __package__ and osp.exists(osp.join(module_path, "stft_module.py")):
+    from .stft_module import STFTDownsample
+
+    print(f"Load 'stft_module.py' from {module_path}")
+else:
+    from stft_module import STFTDownsample
 
 
 class AsymmetricInceptionBlock(nn.Module):
@@ -173,7 +181,7 @@ class InceptionDownsampleBlock(nn.Module):
         self.inception_block = AsymmetricInceptionBlock(
             in_channels, out_channels, self.KERNEL_SIZES
         )
-        self.pool = nn.MaxPool2d(kernel_size=(2, 1), stride=(stride, 1))
+        self.pool = nn.MaxPool2d(kernel_size=(stride, 1), stride=(stride, 1))
         if dropout is not None:
             self.dropout = nn.Dropout(dropout)
         else:
@@ -306,14 +314,15 @@ class DASNet(ClassifyNet):
             # # bs x 16 x 156 x 20
             # STFTDownsample(16, 64, 8, dim=2),
             #
-            # fasteset version 4
+            # fastest version 4
             STFTDownsample(
                 in_channels,
                 64,
                 500,
                 dim=2,
                 window_size=1024,
-                keep_time_data=False,
+                keep_time_data=True,
+                freq_attention=True,
             ),
             #
             # version 5
@@ -358,7 +367,7 @@ class DASNet(ClassifyNet):
             # ResidualBlock(64, 64, stride=(2, 1)),
             #
             #
-            ECABlock(64),
+            # ECABlock(64),
             # SEBlock(64, reduction=16),
             # bs x 64 x 20 x 20
         )
@@ -366,6 +375,7 @@ class DASNet(ClassifyNet):
             InvertedResidualBlock(64, 64),
             InvertedResidualBlock(64, 64),
             InvertedResidualBlock(64, 64),
+            # ECABlock(64),
         )
         # bs x 32 x 25 x 20
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
@@ -376,7 +386,7 @@ class DASNet(ClassifyNet):
         out = self.downsample(x)
         # jit trace忽略assert
         if not torch.jit.is_tracing():  # type: ignore
-            assert out.shape[1:] == (64, 20, 20)
+            assert out.shape[2] <= 30
         out = self.backbone(out)
         return out
 

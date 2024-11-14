@@ -15,30 +15,58 @@ parser.add_argument("data_path", type=str)
 args = parser.parse_args()
 TARGET_PATH = args.data_path
 DATA_FILES = natsort.natsorted(os.listdir(TARGET_PATH))
+LABEL_MAP = {
+    "敲击": "Knock",
+    "攀爬": "Climb",
+    "背景": "Background",
+    "连续振动": "Construction",
+}
+files_dict = {}
+for file in DATA_FILES:
+    label = file.split("_")[-1].split(".")[0]
+    if label not in files_dict:
+        files_dict[label] = []
+    files_dict[label].append(file)
 
 data_index = 0
-file_data = None
 
-fig, ax = plt.subplots()
+fig, axes = plt.subplots(2, 2)
+axes = axes.flatten()
+for ax in axes:
+    ax.axis("off")
 plt.axis("off")
 
 
 def show_data():
-    global ax, data_index, file_data
-    # 标题显示当前标签类型和标签文件名
-    data_file = DATA_FILES[data_index]
-    file_path = osp.join(TARGET_PATH, data_file)
-    file_data = np.load(file_path)[::10].T
-    data = np.abs(file_data)
-    data = np.log1p(np.abs(data))
-    ax.set_title(f"{data_index}. {data_file}")
-    ax.imshow(data, aspect="auto", cmap="jet", vmin=0, vmax=np.log1p(1000))
+    global ax, data_index
+    # # 标题显示当前标签类型和标签文件名
+    # data_file = DATA_FILES[data_index]
+    # file_path = osp.join(TARGET_PATH, data_file)
+    # file_data = np.load(file_path)[::10].T
+    # data = np.abs(file_data)
+    # data = np.log1p(np.abs(data))
+    # ax.set_title(f"{data_index}. {data_file}")
+    # ax.imshow(data, aspect="auto", cmap="jet", vmin=0, vmax=np.log1p(1000))
+    # for label in files_dict:
+    for i, label in enumerate(files_dict):
+        files = files_dict[label]
+        idx = data_index % len(files)
+        data_file = files[idx]
+        file_path = osp.join(TARGET_PATH, data_file)
+        file_data = np.load(file_path)[::10].T
+        data = np.abs(file_data)
+        data = np.log1p(data)
+        ax = axes[i]
+        ax.set_title(f"{LABEL_MAP[label]}")
+        # 调整title的字体大小
+        ax.title.set_fontsize(25)
+        ax.imshow(data, aspect="auto", cmap="jet", vmin=0, vmax=np.log1p(1000))
 
 
 def on_key(event):
     global data_index
-    middle_step = len(DATA_FILES) // 100
-    long_step = len(DATA_FILES) // 10
+    middle_step = 10
+    long_step = 100
     if event.key == "left":
         data_index -= 1
     elif event.key == "right":
@@ -53,7 +81,6 @@ def on_key(event):
         data_index += middle_step
     else:
         return
-    data_index = data_index % len(DATA_FILES)
     show_data()
     plt.draw()
 
