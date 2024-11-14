@@ -81,10 +81,17 @@ class STFTDownsample(torch.nn.Module):
         self.keep_time_data = keep_time_data
         if window is None:
             window = torch.ones(window_size)
+        self.compress = None
+        if stft_channel is not None:
+            self.compress = nn.Conv2d(
+                in_channel, stft_channel, kernel_size=1, bias=False
+            )
+        else:
+            stft_channel = in_channel
         self.register_buffer("window", window)
-        conv_in_channel = (window_size // 2 + 1) * in_channel
+        conv_in_channel = (window_size // 2 + 1) * stft_channel
         if keep_time_data:
-            conv_in_channel += in_channel
+            conv_in_channel += stft_channel
         self.conv = nn.Sequential(
             nn.Conv2d(conv_in_channel, out_channel, kernel_size=1),
             nn.BatchNorm2d(out_channel),
@@ -93,6 +100,8 @@ class STFTDownsample(torch.nn.Module):
         self.channel_encoding = channel_encoding
 
     def forward(self, x):
+        if self.compress is not None:
+            x = self.compress(x)
         y = stft(
             x,
             window_size=self.window_size,
