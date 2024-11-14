@@ -137,7 +137,7 @@ class DataGenerator:
 
     def _get_intersect_labels(
         self,
-        beign: float,
+        begin: float,
         end: float,
         top: float,
         bottom: float,
@@ -150,7 +150,7 @@ class DataGenerator:
         for label in labels:
             if (
                 label.begin < end
-                and label.end > beign
+                and label.end > begin
                 and label.top < bottom
                 and label.bottom > top
             ):
@@ -214,15 +214,8 @@ class DataGenerator:
 
         # 标签重命名
         for label in labels:
-            for key, value in DATA_CONFIG.label_map.items():
-                try:
-                    if re.match(key, label.name):
-                        label.name = value
-                        break
-                except re.error:
-                    pass
-            else:
-                label.name = label.name.split("-")[0]
+            if label.name in DATA_CONFIG.label_map:
+                label.name = DATA_CONFIG.label_map[label.name]
 
         for label in labels:
             # 实际区域不应包含'未知'标签
@@ -231,11 +224,16 @@ class DataGenerator:
 
         # 判断是否有'背景'标签或'列车'标签
         has_background = any(
-            [label.name == "背景" or label.name == "列车" for label in labels]
+            [
+                label.name.startswith("背景") or label.name.startswith("列车")
+                for label in labels
+            ]
         )
         # 删除'背景'标签和'列车'标签
         labels = [
-            label for label in labels if label.name != "背景" and label.name != "列车"
+            label
+            for label in labels
+            if not label.name.startswith("背景") and not label.name.startswith("列车")
         ]
 
         # 生成数据
@@ -394,11 +392,11 @@ def main():
         generator.n_workers = 8
         with generator:
             assert generator.data is not None
-            for left in range(0, generator.data.shape[0], 5000):
+            for left in range(0, generator.data.shape[0], DATA_CONFIG.time_step):
                 for top in range(
                     DAS_CONFIG.valid_range.start,
                     DAS_CONFIG.valid_range.stop - DATA_CONFIG.space,
-                    3,
+                    DATA_CONFIG.space_step,
                 ):
                     label_str, data = generator.generate_classify_data(left, top)
                     if data is None:
