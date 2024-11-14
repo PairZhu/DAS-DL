@@ -372,45 +372,9 @@ class DASNet(ClassifyNet):
         # bs x 32 x 1 x 1
         self.fc = nn.Linear(64, num_classes)
 
-        # # Spatial transformer localization-network
-        # self.localization = nn.Sequential(
-        #     nn.Conv2d(64, 8, kernel_size=7),
-        #     nn.MaxPool2d(2, stride=2),
-        #     nn.ReLU(True),
-        #     nn.Conv2d(8, 10, kernel_size=5),
-        #     nn.MaxPool2d(2, stride=2),
-        #     nn.ReLU(True),
-        #     nn.AdaptiveAvgPool2d((3, 3)),
-        # )
-
-        # # Regressor for the 3 * 2 affine matrix
-        # self.fc_loc = nn.Sequential(
-        #     nn.Linear(10 * 3 * 3, 32), nn.ReLU(True), nn.Linear(32, 3 * 2)
-        # )
-
-        # # Initialize the weights/bias with identity transformation
-        # self.fc_loc[2].weight.data.zero_()
-        # self.fc_loc[2].bias.data.copy_(
-        #     torch.tensor([1, 0, 0, 0, 1, 0], dtype=torch.float)
-        # )
-
-        # Spatial transformer network forward function
-
-    # def stn(self, x):
-    #     xs = self.localization(x)
-    #     xs = xs.view(-1, 10 * 3 * 3)
-    #     theta = self.fc_loc(xs)
-    #     theta = theta.view(-1, 2, 3)
-
-    #     grid = F.affine_grid(theta, x.size(), align_corners=False)
-    #     x = F.grid_sample(x, grid, align_corners=False)
-
-    #     return x
-
     def feature(self, x):
         out = self.downsample(x)
         assert out.shape[1:] == (64, 20, 20)
-        # out = self.stn(out)
         out = self.backbone(out)
         return out
 
