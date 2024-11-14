@@ -65,6 +65,7 @@ class STFTDownsample(torch.nn.Module):
         in_channel,
         out_channel,
         downsample,
+        stft_channel=None,
         window_size=64,
         dim=3,
         window=None,

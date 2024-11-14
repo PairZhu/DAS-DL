@@ -374,7 +374,9 @@ class DASNet(ClassifyNet):
 
     def feature(self, x):
         out = self.downsample(x)
-        assert out.shape[1:] == (64, 20, 20)
+        # jit trace忽略assert
+        if not torch.jit.is_tracing():  # type: ignore
+            assert out.shape[1:] == (64, 20, 20)
         out = self.backbone(out)
         return out
 
