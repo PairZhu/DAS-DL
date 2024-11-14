@@ -5,6 +5,7 @@ from torch.utils.data import DataLoader, WeightedRandomSampler
 from torch.utils.tensorboard.writer import SummaryWriter
 import os
 import os.path as osp
+import shutil
 import numpy as np
 import random
 import argparse
@@ -17,11 +18,12 @@ from datetime import datetime
 import thop
 import copy
 from sklearn.metrics import classification_report, f1_score, confusion_matrix
+import importlib
 
+from model import DASNet, ClassifyNet
 from dataset import ClassifyDataset
 import enhance
 from enhance import RandomChoiceTransform, ProbabilityTransform
-from model import DASNet, ClassifyNet
 from utils import ReservoirSampler, visualize_cam
 
 LABEL_LIST = ["背景", "敲击", "攀爬", "连续振动"]
@@ -41,7 +43,7 @@ def seed_everything(seed: int):
 
 def train(
     data_loader: DataLoader,
-    model: ClassifyNet,
+    model: ClassifyNet,  # type: ignore
     optimizer: optim.Optimizer,
     epochs: int | range,
     callback: Callable | None = None,
@@ -79,7 +81,7 @@ def train(
 @torch.no_grad()
 def validate(
     data_loader: DataLoader,
-    model: ClassifyNet,
+    model: ClassifyNet,  # type: ignore
     device: torch.device | str = "cuda",
     epoch: int = 0,
 ):
@@ -154,10 +156,9 @@ def validate(
 
 def main():
     model = DASNet(1, len(LABEL_LIST))
-    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.lr / 10)
 
-    if args.pretrained:
-        checkpoint = torch.load(args.pretrained, map_location="cpu")
+    if args.model:
+        checkpoint = torch.load(args.model, map_location="cpu", weights_only=False)
         # 可能是权重，也可能是整个模型
         try:
             model.load_state_dict(checkpoint["model"].state_dict())
@@ -170,10 +171,11 @@ def main():
     else:
         begin_epoch = 0
 
+    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.lr / 10)
+
     dummy_input = torch.randn(1, *ClassifyDataset.SHAPE)
     # 计算模型参数和FLOPs，拷贝一份model，因为profile会修改模型
     flops, params = thop.profile(copy.deepcopy(model), inputs=(dummy_input,))[0:2]
-    print(f"FLOPs: {flops/1e9:.2f}G, Params: {params/1e6:.2f}M")
     writer.add_text("Profile", f"FLOPs: {flops/1e9:.2f}G, Params: {params/1e6:.2f}M")
     writer.add_text(
         "Config",
@@ -198,7 +200,7 @@ def main():
     )
 
     val_dataset = ClassifyDataset(
-        osp.join("data", "val"),
+        args.val,
         LABEL_LIST,
         # transform=trasform,
     )
@@ -211,7 +213,7 @@ def main():
     )
 
     train_dataset = ClassifyDataset(
-        osp.join("data", "train"),
+        args.train,
         LABEL_LIST,
         # transform=trasform,
     )
@@ -241,10 +243,11 @@ def main():
     device = torch.device(args.device)
     model = model.to(device)
 
-    checkpoint_dir = osp.join(log_dir, "checkpoints")
-    os.makedirs(checkpoint_dir, exist_ok=True)
-
     def save_model(name: str, epoch: int = 0):
+        if isinstance(writer, DummyWriter):
+            return
+        checkpoint_dir = osp.join(log_dir, "checkpoints")
+        os.makedirs(checkpoint_dir, exist_ok=True)
         torch.save(
             {"model": model, "epoch": epoch},
             osp.join(checkpoint_dir, name),
@@ -262,7 +265,7 @@ def main():
             print("Latest Model Saved")
         writer.add_scalar("Metric/Best", max_metric, epoch)
 
-    if args.epochs > 0:
+    if args.mode == "train":
         train(
             train_loader,
             model,
@@ -272,32 +275,83 @@ def main():
             device=device,
         )
     else:
-        validate(val_loader, model, device=device)
+        max_metric = validate(val_loader, model, device=device)
     print("Training Finished, Best Metric:", max_metric)
-    # # 用于可选的继续训练
-    # breakpoint()
-    writer.close()
+
+
+class DummyWriter(SummaryWriter):
+    def __init__(self, save=True, *args, **kwargs):
+        self.save = save
+
+    def add_scalar(self, tag, scalar_value, global_step=None, walltime=None):
+        print(f"{tag}: {scalar_value}")
+
+    def add_figure(self, tag, figure, global_step=None, close=True, walltime=None):
+        if not self.save:
+            return
+        if not isinstance(figure, list):
+            figure = [figure]
+        os.makedirs(osp.join("figures", tag), exist_ok=True)
+        for i, fig in enumerate(figure):
+            fig.savefig(osp.join("figures", tag, f"{global_step}_{i}.png"))
+            if close:
+                plt.close(fig)
+
+    def add_text(self, tag, text_string, global_step=None, walltime=None):
+        print(f"Text: {tag}\n{text_string}")
+
+    def add_graph(self, model, input_to_model=None, verbose=False):
+        print(f"Model: {model.__class__.__name__}")
+
+    def flush(self):
+        pass
+
+    def close(self):
+        pass
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("-e", "--epochs", type=int, default=200)
     parser.add_argument("--device", type=str, default="cuda")
-    parser.add_argument("--batch_size", type=int, default=32)
-    parser.add_argument("--num_workers", type=int, default=5)
-    parser.add_argument("--pretrained", type=str, default=None)
+    parser.add_argument("-b", "--batch_size", type=int, default=32)
+    parser.add_argument("-w", "--num_workers", type=int, default=5)
+    parser.add_argument("-m", "--model", type=str, default=None)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--lr", type=float, default=1e-7)
-    parser.add_argument("name", type=str, default=None, nargs="?")
+    parser.add_argument("--train", type=str, default=osp.join("data", "train"))
+    parser.add_argument("--val", type=str, default=osp.join("data", "val"))
+    parser.add_argument("-n", "--name", type=str, default="")
+    parser.add_argument(
+        "mode", type=str, choices=["train", "val"], default="train", nargs="?"
+    )
 
     args = parser.parse_args()
 
-    if args.name is None:
-        args.name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    log_dir = osp.join("runs", "classify_" + args.name)
+    name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    if args.name:
+        name = f"{name}_{args.name}"
+    log_dir = osp.join("runs", name)
     print(f"Log Dir: {log_dir}, Open Tensorboard with `tensorboard --logdir {log_dir}`")
     print("Open http://localhost:6006/ in your browser")
-    if args.seed is not None:
-        seed_everything(args.seed)
-    with SummaryWriter(log_dir, flush_secs=10) as writer:
-        main()
+    # 强制设置seed，方便复现
+    if args.seed is None:
+        args.seed = random.randint(0, 1 << 32)
+    seed_everything(args.seed)
+    # 读取log_dir下的model.py文件
+    if osp.exists(osp.join(log_dir, "model.py")):
+        # 动态加载model.py
+        print(f"Load 'model.py' from {log_dir}")
+        model_module = importlib.import_module("model", package=log_dir)
+        DASNet = model_module.DASNet
+        ClassifyNet = model_module.ClassifyNet
+    if args.mode == "train":
+        writer = SummaryWriter(log_dir, flush_secs=10)
+        # 备份model.py
+        if not osp.exists(osp.join(log_dir, "model.py")):
+            shutil.copy("model.py", osp.join(log_dir, "model.py"))
+    else:
+        writer = DummyWriter()
+
+    main()
+    writer.close()

@@ -68,7 +68,7 @@ class STFTDownsample(torch.nn.Module):
         window_size=64,
         dim=3,
         window=None,
-        preserve_time_dim=True,
+        keep_time_data=True,
         channel_encoding=True,
     ):
         super().__init__()
@@ -77,12 +77,12 @@ class STFTDownsample(torch.nn.Module):
         self.downsample = downsample
         self.window_size = window_size
         self.dim = dim
-        self.preserve_time_dim = preserve_time_dim
+        self.keep_time_data = keep_time_data
         if window is None:
             window = torch.ones(window_size)
         self.register_buffer("window", window)
         conv_in_channel = (window_size // 2 + 1) * in_channel
-        if preserve_time_dim:
+        if keep_time_data:
             conv_in_channel += in_channel
         self.conv = nn.Sequential(
             nn.Conv2d(conv_in_channel, out_channel, kernel_size=1),
@@ -99,7 +99,7 @@ class STFTDownsample(torch.nn.Module):
             window=self.window,
             dim=self.dim,
         )
-        if self.preserve_time_dim:
+        if self.keep_time_data:
             # 对self.dim维度进行降采样
             time_data = x.index_select(
                 self.dim,

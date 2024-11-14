@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from typing import Type
 
 from dwt_module import DWTDownsample
 from stft_module import STFTDownsample
@@ -83,7 +84,6 @@ class ResidualBlock(nn.Module):
                 ),
                 nn.BatchNorm2d(out_channels),
             )
-        # self.attention = ECABlock(out_channels)
 
     def forward(self, x):
         identity = x
@@ -96,7 +96,66 @@ class ResidualBlock(nn.Module):
             identity = self.downsample(x)
         out += identity
         out = F.relu(out, inplace=True)
-        # out = self.attention(out)
+        return out
+
+
+class InvertedResidualBlock(nn.Module):
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        stride: int | tuple[int, int] | list[int] = 1,
+        ratio: int = 6,
+        activation: Type[nn.Module] = nn.ReLU6,
+    ):
+        super().__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(
+                in_channels,
+                out_channels * ratio,
+                kernel_size=1,
+                bias=False,
+            ),
+            nn.BatchNorm2d(out_channels * ratio),
+            activation(inplace=True),
+            nn.Conv2d(
+                out_channels * ratio,
+                out_channels * ratio,
+                kernel_size=3,
+                stride=stride,  # type: ignore
+                padding=1,
+                groups=out_channels * ratio,
+                bias=False,
+            ),
+            nn.BatchNorm2d(out_channels * ratio),
+            activation(inplace=True),
+            nn.Conv2d(
+                out_channels * ratio,
+                out_channels,
+                kernel_size=1,
+                bias=False,
+            ),
+            nn.BatchNorm2d(out_channels),
+        )
+        self.downsample = None
+        if stride not in (1, [1, 1], (1, 1)) or in_channels != out_channels:
+            self.downsample = nn.Sequential(
+                nn.Conv2d(
+                    in_channels,
+                    out_channels,
+                    kernel_size=1,
+                    stride=stride,  # type: ignore
+                    bias=False,
+                ),
+                nn.BatchNorm2d(out_channels),
+            )
+
+    def forward(self, x):
+        identity = x
+        out = self.conv(x)
+        if self.downsample is not None:
+            identity = self.downsample(x)
+        out += identity
         return out
 
 
@@ -181,23 +240,23 @@ class DASNet(ClassifyNet):
             # InceptionDownsampleBlock(64, 64, 0.2, 5),
             #
             # version 2
-            ResidualBlock(in_channels, 2, stride=(2, 1)),
-            # bs x 2 x 5000 x 20
-            ResidualBlock(2, 4, stride=(2, 1)),
-            # bs x 4 x 2500 x 20
-            ResidualBlock(4, 8, stride=(2, 1)),
-            # bs x 8 x 1250 x 20
-            ResidualBlock(8, 16, stride=(2, 1)),
-            # bs x 16 x 625 x 20
-            ResidualBlock(16, 32, stride=(2, 1)),
-            # bs x 32 x 312 x 20
-            ResidualBlock(32, 64, stride=(2, 1)),
-            # bs x 64 x 156 x 20
-            ResidualBlock(64, 64, stride=(2, 1)),
-            # bs x 64 x 78 x 20
-            ResidualBlock(64, 64, stride=(2, 1)),
-            # bs x 64 x 39 x 20
-            ResidualBlock(64, 64, stride=(2, 1)),
+            # ResidualBlock(in_channels, 2, stride=(2, 1)),
+            # # bs x 2 x 5000 x 20
+            # ResidualBlock(2, 4, stride=(2, 1)),
+            # # bs x 4 x 2500 x 20
+            # ResidualBlock(4, 8, stride=(2, 1)),
+            # # bs x 8 x 1250 x 20
+            # ResidualBlock(8, 16, stride=(2, 1)),
+            # # bs x 16 x 625 x 20
+            # ResidualBlock(16, 32, stride=(2, 1)),
+            # # bs x 32 x 312 x 20
+            # ResidualBlock(32, 64, stride=(2, 1)),
+            # # bs x 64 x 156 x 20
+            # ResidualBlock(64, 64, stride=(2, 1)),
+            # # bs x 64 x 78 x 20
+            # ResidualBlock(64, 64, stride=(2, 1)),
+            # # bs x 64 x 39 x 20
+            # ResidualBlock(64, 64, stride=(2, 1)),
             #
             # version 3
             # DWTDownsample(in_channels, 2, dim=2),
@@ -248,13 +307,14 @@ class DASNet(ClassifyNet):
             # STFTDownsample(16, 64, 8, dim=2),
             #
             # fasteset version 4
-            # STFTDownsample(
-            #     in_channels,
-            #     64,
-            #     500,
-            #     dim=2,
-            #     window_size=1024,
-            # ),
+            STFTDownsample(
+                in_channels,
+                64,
+                500,
+                dim=2,
+                window_size=1024,
+                keep_time_data=False,
+            ),
             #
             # version 5
             # LargeConvDownsampleBlock(in_channels, 2, 2),
@@ -299,20 +359,58 @@ class DASNet(ClassifyNet):
             #
             #
             ECABlock(64),
+            # SEBlock(64, reduction=16),
             # bs x 64 x 20 x 20
         )
         self.backbone = nn.Sequential(
-            ResidualBlock(64, 256),
-            ResidualBlock(256, 256),
-            ResidualBlock(256, 256),
+            InvertedResidualBlock(64, 64),
+            InvertedResidualBlock(64, 64),
+            InvertedResidualBlock(64, 64),
         )
         # bs x 32 x 25 x 20
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         # bs x 32 x 1 x 1
-        self.fc = nn.Linear(256, num_classes)
+        self.fc = nn.Linear(64, num_classes)
+
+        # # Spatial transformer localization-network
+        # self.localization = nn.Sequential(
+        #     nn.Conv2d(64, 8, kernel_size=7),
+        #     nn.MaxPool2d(2, stride=2),
+        #     nn.ReLU(True),
+        #     nn.Conv2d(8, 10, kernel_size=5),
+        #     nn.MaxPool2d(2, stride=2),
+        #     nn.ReLU(True),
+        #     nn.AdaptiveAvgPool2d((3, 3)),
+        # )
+
+        # # Regressor for the 3 * 2 affine matrix
+        # self.fc_loc = nn.Sequential(
+        #     nn.Linear(10 * 3 * 3, 32), nn.ReLU(True), nn.Linear(32, 3 * 2)
+        # )
+
+        # # Initialize the weights/bias with identity transformation
+        # self.fc_loc[2].weight.data.zero_()
+        # self.fc_loc[2].bias.data.copy_(
+        #     torch.tensor([1, 0, 0, 0, 1, 0], dtype=torch.float)
+        # )
+
+        # Spatial transformer network forward function
+
+    # def stn(self, x):
+    #     xs = self.localization(x)
+    #     xs = xs.view(-1, 10 * 3 * 3)
+    #     theta = self.fc_loc(xs)
+    #     theta = theta.view(-1, 2, 3)
+
+    #     grid = F.affine_grid(theta, x.size(), align_corners=False)
+    #     x = F.grid_sample(x, grid, align_corners=False)
+
+    #     return x
 
     def feature(self, x):
         out = self.downsample(x)
+        assert out.shape[1:] == (64, 20, 20)
+        # out = self.stn(out)
         out = self.backbone(out)
         return out
 

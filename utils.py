@@ -1,6 +1,5 @@
 from typing import Sequence
 import random
-from scipy.signal import stft
 import numpy as np
 import matplotlib.pyplot as plt
 

@@ -4,8 +4,8 @@ import os
 
 # 三次训练
 train_args = [
-    "large_eca_down --epochs 100",
-    *(["--epochs 100"] * 4),
+    "--lr 1e-6 -n notime",
+    *(["--lr 1e-6"] * 4),
 ]
 
 for arg in train_args:

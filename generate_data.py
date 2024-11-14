@@ -7,6 +7,7 @@ import re
 from datetime import datetime
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor
+import argparse
 
 from utils import split_array
 from config import DAS_CONFIG, DATA_CONFIG
@@ -311,7 +312,7 @@ class DataGenerator:
 
         begin = int(self._x_to_time(left))
         file_name = f"{begin}_{top}_{label_str}"
-        os.makedirs("classify_data", exist_ok=True)
+        os.makedirs(args.output, exist_ok=True)
         np.save(
             osp.join("classify_data", f"{file_name}.npy"),
             data.astype(DATA_CONFIG.type),
@@ -385,8 +386,9 @@ def get_data_generators(root, max_depth=10, depth=0):
 
 
 def main():
-    root = "label_data"
+    root = args.input
     generators = get_data_generators(root)
+    print(f"共有{len(generators)}个数据生成器")
     label_count = {}
     for generator in tqdm(generators):
         generator.n_workers = 8
@@ -408,4 +410,8 @@ def main():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-i", "--input", type=str, default="label_data")
+    parser.add_argument("-o", "--output", type=str, default="classify_data")
+    args = parser.parse_args()
     main()

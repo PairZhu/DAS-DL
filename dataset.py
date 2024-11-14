@@ -58,6 +58,8 @@ class ClassifyDataset(Dataset):
 
 def split_files(files, ratio=0.8):
     label_files = {}
+    if isinstance(files, dict):
+        files = [file for item in files.values() for file in item]
     for file in files:
         timestamp, top, labels = get_params_by_filename(file)
         if len(labels) > 1:
@@ -141,21 +143,26 @@ def balance_files(root, max_len=None, min_enhance=0.2):
 
 if __name__ == "__main__":
     source_files = [f for f in os.listdir("classify_data") if f.endswith(".npy")]
-    train_files, test_files = split_files(source_files, 0.8)
+    train_files, other_files = split_files(source_files, 0.6)
+    val_files, test_files = split_files(other_files, 0.5)
 
     train_path = osp.join("data", "train")
     val_path = osp.join("data", "val")
+    test_path = osp.join("data", "test")
 
     train_file_count = sum(len(files) for files in train_files.values())
-    val_file_count = sum(len(files) for files in test_files.values())
-    print(f"Train: {train_file_count}, Val: {val_file_count}")
+    val_file_count = sum(len(files) for files in val_files.values())
+    test_file_count = sum(len(files) for files in test_files.values())
+    print(f"Train: {train_file_count}, Val: {val_file_count}, Test: {test_file_count}")
     print(
         "Train: {}".format({label: len(files) for label, files in train_files.items()})
     )
-    print("Val: {}".format({label: len(files) for label, files in test_files.items()}))
+    print("Val: {}".format({label: len(files) for label, files in val_files.items()}))
+    print("Test: {}".format({label: len(files) for label, files in test_files.items()}))
 
     os.makedirs(train_path, exist_ok=True)
     os.makedirs(val_path, exist_ok=True)
+    os.makedirs(test_path, exist_ok=True)
 
     with tqdm(total=train_file_count, desc="Link Train Files") as pbar:
         for label, files in train_files.items():
@@ -164,7 +171,13 @@ if __name__ == "__main__":
                 pbar.update(1)
 
     with tqdm(total=val_file_count, desc="Link Val Files") as pbar:
-        for label, files in test_files.items():
+        for label, files in val_files.items():
             for file in files:
                 os.link(osp.join("classify_data", file), osp.join(val_path, file))
+                pbar.update(1)
+
+    with tqdm(total=test_file_count, desc="Link Test Files") as pbar:
+        for label, files in test_files.items():
+            for file in files:
+                os.link(osp.join("classify_data", file), osp.join(test_path, file))
                 pbar.update(1)
