@@ -29,34 +29,40 @@ def stft(x: torch.Tensor, window_size, hop_size, window=None, dim=-1):
     spec = spec.view(
         s[0], s[1], s[2], spec.shape[-2], spec.shape[-1]
     )  # (B, C, H, F, W)
-    # 将频率维度合并到通道维度
-    spec = spec.permute(0, 1, 3, 2, 4).reshape(
-        s[0], s[1] * spec.shape[3], s[2], spec.shape[4]
-    )
+    # 将频率维度放在通道维度后面
+    spec = spec.permute(0, 1, 3, 2, 4)  # (B, C, F, H, W)
     if dim != 3:
-        spec = spec.transpose(dim, 3)
+        spec = spec.transpose(dim + 1, 4)
     return spec
 
 
-def position_encoding(max_sequence_length, d_model, base=10000):
-    pe = torch.zeros(
-        max_sequence_length, d_model, dtype=torch.float
-    )  # size(max_sequence_length, d_model)
-    exp_1 = torch.arange(
-        d_model // 2, dtype=torch.float
-    )  # 初始化一半维度，sin位置编码的维度被分为了两部分
-    exp_value = exp_1 / (d_model / 2)
+class FreqAttention(nn.Module):
+    def __init__(self, freq_channel, reduction=4):
+        super().__init__()
+        self.max_pool = nn.AdaptiveMaxPool2d(1)
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.conv = nn.Conv1d(3, freq_channel // reduction, 1, bias=False)
+        self.tanh = nn.Tanh()
+        self.register_buffer("freq_weight", torch.arange(freq_channel) / freq_channel)
 
-    alpha = 1 / (base**exp_value)  # size(dmodel/2)
-    out = (
-        torch.arange(max_sequence_length, dtype=torch.float)[:, None] @ alpha[None, :]
-    )  # size(max_sequence_length, d_model/2)
-    embedding_sin = torch.sin(out)
-    embedding_cos = torch.cos(out)
-
-    pe[:, 0::2] = embedding_sin  # 奇数位置设置为sin
-    pe[:, 1::2] = embedding_cos  # 偶数位置设置为cos
-    return pe
+    def forward(self, x):
+        # x: (B, C, F, H, W)
+        b, c, f, h, w = x.size()
+        x = x.view(b * c, f, h, w)
+        # (B*C, F, H, W)
+        max_out = self.max_pool(x).view(b * c, 1, f)
+        avg_out = self.avg_pool(x).view(b * c, 1, f)
+        freq_out = self.freq_weight.view(1, 1, f).expand(b * c, 1, f)
+        out = torch.cat([max_out, avg_out, freq_out], dim=1)  # (B*C, 3, F)
+        out = self.conv(out)  # (B*C, F//reduction, F)
+        # 将维度1转为向量模长
+        out = torch.sum(out * out, dim=1)  # (B*C, F)
+        # 将向量模长转为权重
+        out = self.tanh(out)
+        y = x * out.view(b * c, f, 1, 1)
+        y = x + y
+        y = y.view(b, c, f, h, w)
+        return y
 
 
 class STFTDownsample(torch.nn.Module):
@@ -65,12 +71,11 @@ class STFTDownsample(torch.nn.Module):
         in_channel,
         out_channel,
         downsample,
-        stft_channel=None,
         window_size=64,
         dim=3,
         window=None,
         keep_time_data=True,
-        channel_encoding=True,
+        freq_attention=True,
     ):
         super().__init__()
         if downsample >= window_size:
@@ -81,15 +86,11 @@ class STFTDownsample(torch.nn.Module):
         self.keep_time_data = keep_time_data
         if window is None:
             window = torch.ones(window_size)
-        self.compress = None
-        if stft_channel is not None:
-            self.compress = nn.Conv2d(
-                in_channel, stft_channel, kernel_size=1, bias=False
-            )
-        else:
-            stft_channel = in_channel
+        stft_channel = in_channel
         self.register_buffer("window", window)
-        conv_in_channel = (window_size // 2 + 1) * stft_channel
+        freq_channel = window_size // 2 + 1
+        conv_in_channel = freq_channel * stft_channel
+        self.freq_attention = FreqAttention(freq_channel) if freq_attention else None
         if keep_time_data:
             conv_in_channel += stft_channel
         self.conv = nn.Sequential(
@@ -97,11 +98,8 @@ class STFTDownsample(torch.nn.Module):
             nn.BatchNorm2d(out_channel),
             nn.ReLU(inplace=True),
         )
-        self.channel_encoding = channel_encoding
 
     def forward(self, x):
-        if self.compress is not None:
-            x = self.compress(x)
         y = stft(
             x,
             window_size=self.window_size,
@@ -109,6 +107,13 @@ class STFTDownsample(torch.nn.Module):
             window=self.window,
             dim=self.dim,
         )
+        # (B, C, F, H, W)
+        if self.freq_attention:
+            y = self.freq_attention(y)
+
+        y = y.reshape(y.size(0), -1, y.size(-2), y.size(-1))
+        # (B, C*F, H, W)
+
         if self.keep_time_data:
             # 对self.dim维度进行降采样
             time_data = x.index_select(
@@ -116,14 +121,6 @@ class STFTDownsample(torch.nn.Module):
                 torch.arange(0, x.size(self.dim), self.downsample, device=x.device),
             )
             y = torch.cat([time_data, y], dim=1)
-        if self.channel_encoding:
-            # 对通道维度进行位置编码
-            pe = position_encoding(
-                max_sequence_length=y.size(1), d_model=y.size(2) * y.size(3), base=10000
-            )
-            pe = pe.to(y.device)
-            pe = pe.view(1, pe.size(0), y.size(2), y.size(3))
-            y = y + pe
 
         y = self.conv(y)
         return y

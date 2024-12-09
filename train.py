@@ -2,10 +2,10 @@
 
 import os
 
-# 三次训练
+seeds = [0, 1, 42, 1024]
 train_args = [
-    "--lr 1e-6 -n notime",
-    *(["--lr 1e-6"] * 4),
+    f"--lr 1e-6 -b 64 -w 8 -e 200 --seed {seeds[0]}",
+    *([f"--lr 1e-6 -b 64 -w 8 -e 200 --seed {seed}" for seed in seeds[1:]]),
 ]
 
 for arg in train_args:
