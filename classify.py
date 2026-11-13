@@ -10,7 +10,6 @@ import numpy as np
 import random
 import argparse
 from typing import Callable
-from functools import partial
 from tqdm import tqdm
 import seaborn as sns
 import matplotlib.pyplot as plt
@@ -23,12 +22,12 @@ import importlib
 from model import DASNet, ClassifyNet
 from dataset import ClassifyDataset
 import enhance
-from enhance import RandomChoiceTransform, ProbabilityTransform
+from enhance import RandomChoiceTransform, ProbabilityTransform, EEGDryElectrodeAugment
 from utils import ReservoirSampler, visualize_cam
 from pathlib import Path
 
-LABEL_LIST = ["背景", "敲击", "攀爬", "连续振动"]
-EN_LABEL_LIST = ["Background", "Knock", "Climb", "Construction"]
+LABEL_LIST = ["6hz", "7hz", "8hz", "9hz", "10hz", "11hz"]
+EN_LABEL_LIST = ["6hz", "7hz", "8hz", "9hz", "10hz", "11hz"]
 # 启用cudnn加速
 torch.backends.cudnn.benchmark = True
 
@@ -201,21 +200,6 @@ def main():
         f"Batch Size: {args.batch_size}, Learning Rate: {args.lr}, Seed: {args.seed}",
     )
 
-    trasform = ProbabilityTransform(  # noqa: F841
-        [
-            RandomChoiceTransform(
-                [
-                    enhance.GuassianNoise(std=partial(np.random.uniform, 5, 10)),
-                    enhance.RandomNoise(low=-10, high=10),
-                ]
-            ),
-            enhance.Flip(axis=0),
-            enhance.Flip(axis=1),
-            enhance.ScaleValue(scale=partial(np.random.uniform, 0.9, 1.1)),
-        ],
-        p=[1, 0.8, 0.8, 1],
-    )
-
     val_dataset = ClassifyDataset(
         args.val,
         LABEL_LIST,
@@ -228,11 +212,11 @@ def main():
         pin_memory=True,
         persistent_workers=True if args.num_workers > 0 else False,
     )
-
+    transform = EEGDryElectrodeAugment(fs=250)
     train_dataset = ClassifyDataset(
         args.train,
         LABEL_LIST,
-        # transform=trasform,
+        transform=transform,
     )
 
     label_counts = np.zeros(len(LABEL_LIST))
@@ -338,13 +322,13 @@ class DummyWriter(SummaryWriter):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("-e", "--epochs", type=int, default=300)
+    parser.add_argument("-e", "--epochs", type=int, default=3000)
     parser.add_argument("--device", type=str, default="cuda")
-    parser.add_argument("-b", "--batch_size", type=int, default=32)
-    parser.add_argument("-w", "--num_workers", type=int, default=5)
+    parser.add_argument("-b", "--batch_size", type=int, default=8)
+    parser.add_argument("-w", "--num_workers", type=int, default=4)
     parser.add_argument("-m", "--model", type=str, default=None)
     parser.add_argument("--seed", type=int, default=None)
-    parser.add_argument("--lr", type=float, default=1e-7)
+    parser.add_argument("--lr", type=float, default=5e-5)
     parser.add_argument("--train", type=str, default=osp.join("data", "train"))
     parser.add_argument("--val", type=str, default=osp.join("data", "val"))
     parser.add_argument("-n", "--name", type=str, default="")

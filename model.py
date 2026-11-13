@@ -236,92 +236,14 @@ class DASNet(ClassifyNet):
     def __init__(self, in_channels, num_classes):
         super().__init__()
         self.downsample = nn.Sequential(
-            # bs x 1 x 10000 x 20
-            #
-            # version 1
-            # InceptionDownsampleBlock(in_channels, 64, 0.2, 4),
-            # # bs x 64 x 2500 x 20
-            # InceptionDownsampleBlock(64, 64, 0.2, 5),
-            # # bs x 64 x 500 x 20
-            # InceptionDownsampleBlock(64, 64, 0.2, 4),
-            # # bs x 64 x 125 x 20
-            # InceptionDownsampleBlock(64, 64, 0.2, 5),
-            #
-            # version 2
-            # ResidualBlock(in_channels, 2, stride=(2, 1)),
-            # # bs x 2 x 5000 x 20
-            # ResidualBlock(2, 4, stride=(2, 1)),
-            # # bs x 4 x 2500 x 20
-            # ResidualBlock(4, 8, stride=(2, 1)),
-            # # bs x 8 x 1250 x 20
-            # ResidualBlock(8, 16, stride=(2, 1)),
-            # # bs x 16 x 625 x 20
-            # ResidualBlock(16, 32, stride=(2, 1)),
-            # # bs x 32 x 312 x 20
-            # ResidualBlock(32, 64, stride=(2, 1)),
-            # # bs x 64 x 156 x 20
-            # ResidualBlock(64, 64, stride=(2, 1)),
-            # # bs x 64 x 78 x 20
-            # ResidualBlock(64, 64, stride=(2, 1)),
-            # # bs x 64 x 39 x 20
-            # ResidualBlock(64, 64, stride=(2, 1)),
-            #
-            # version 3
-            # DWTDownsample(in_channels, 2, dim=2),
-            # # bs x 2 x 5000 x 20
-            # DWTDownsample(2, 4, dim=2),
-            # # bs x 4 x 2500 x 20
-            # DWTDownsample(4, 8, dim=2),
-            # # bs x 8 x 1250 x 20
-            # DWTDownsample(8, 16, dim=2),
-            # # bs x 16 x 625 x 20
-            # DWTDownsample(16, 32, dim=2),
-            # # bs x 32 x 313 x 20
-            # DWTDownsample(32, 64, dim=2),
-            # # bs x 64 x 157 x 20
-            # DWTDownsample(64, 64, dim=2),
-            # # bs x 64 x 79 x 20
-            # DWTDownsample(64, 64, dim=2),
-            # # bs x 64 x 40 x 20
-            # DWTDownsample(64, 64, dim=2),
-            #
-            # faster version 3
-            # DWTDownsample(in_channels, 4, dim=2, J=2),
-            # # bs x 4 x 2500 x 20
-            # DWTDownsample(4, 16, dim=2, J=2),
-            # # bs x 16 x 625 x 20
-            # DWTDownsample(16, 64, dim=2, J=2),
-            # # bs x 64 x 157 x 20
-            # DWTDownsample(64, 64, dim=2, J=2),
-            # # bs x 64 x 40 x 20
-            # DWTDownsample(64, 64, dim=2, J=1),
-            #
-            # version 4
-            # STFTDownsample(in_channels, 4, 4, dim=2),
-            # # bs x 4 x 2500 x 20
-            # STFTDownsample(4, 16, 4, dim=2),
-            # # bs x 16 x 625 x 20
-            # STFTDownsample(16, 64, 4, dim=2),
-            # # bs x 64 x 157 x 20
-            # STFTDownsample(64, 64, 4, dim=2),
-            # # bs x 64 x 40 x 20
-            # STFTDownsample(64, 64, 2, dim=2),
-            #
-            # faster version 4
-            # STFTDownsample(in_channels, 16, 8, dim=2),
-            # # bs x 16 x 1250 x 20
-            # STFTDownsample(16, 16, 8, dim=2),
-            # # bs x 16 x 156 x 20
-            # STFTDownsample(16, 64, 8, dim=2),
-            #
-            # fastest version 4
+            # bs x 1 x 500 x 8
             STFTDownsample(
                 in_channels,
-                64,
-                500,
+                16,
+                downsample=50,
                 dim=2,
-                window_size=1024,
-                keep_time_data=True,
+                window_size=250,
+                # keep_time_data=True,
                 freq_attention=True,
             ),
             #
@@ -372,15 +294,13 @@ class DASNet(ClassifyNet):
             # bs x 64 x 20 x 20
         )
         self.backbone = nn.Sequential(
-            InvertedResidualBlock(64, 64),
-            InvertedResidualBlock(64, 64),
-            InvertedResidualBlock(64, 64),
-            # ECABlock(64),
+            InvertedResidualBlock(16, 16),
+            InvertedResidualBlock(16, 16),
         )
         # bs x 32 x 25 x 20
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         # bs x 32 x 1 x 1
-        self.fc = nn.Linear(64, num_classes)
+        self.fc = nn.Linear(16, num_classes)
 
     def feature(self, x):
         out = self.downsample(x)

@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 import numpy as np
 import cv2
 from typing import Callable
+from scipy.signal import butter, filtfilt
 
 
 def guassian_noise(image: np.ndarray, mean: float = 0, std: float = 0.1) -> np.ndarray:
@@ -204,3 +205,80 @@ class RandomChoiceTransform(Transform):
         for idx in idxs:
             data = self.transforms[int(idx)](data)
         return data
+
+
+class EEGDryElectrodeAugment(Transform):
+    """
+    干电极 EEG 仿真增强（相对尺度）
+    data shape: (T, C)
+    """
+
+    def __init__(
+        self,
+        fs: int = 250,
+        p_white: float = 1.0,
+        p_drift: float = 0.7,
+        p_powerline: float = 0.5,
+        p_motion: float = 0.3,
+    ):
+        self.fs = fs
+        self.p_white = p_white
+        self.p_drift = p_drift
+        self.p_powerline = p_powerline
+        self.p_motion = p_motion
+
+    def __call__(self, data: np.ndarray) -> np.ndarray:
+        data = data.copy()
+        T, C = data.shape
+
+        # ===== 1. per-channel 鲁棒尺度（MAD）=====
+        # s_c shape: (C,)
+        s_c = np.median(np.abs(data - np.median(data, axis=0)), axis=0)
+        s_c[s_c == 0] = np.mean(s_c[s_c > 0])  # 防止全零通道
+
+        # ===== 2. 白噪声（热噪声等效）=====
+        if np.random.rand() < self.p_white:
+            alpha = np.random.uniform(0.05, 0.15)
+            white = np.random.randn(T, C) * (alpha * s_c)
+            data += white
+
+        # ===== 3. 低频漂移 / 极化噪声（1/f 近似）=====
+        if np.random.rand() < self.p_drift:
+            beta = np.random.uniform(0.1, 0.4)
+            drift = self._low_freq_noise(T, C, cutoff=0.5)
+            data += beta * s_c * drift
+
+            # 共模漂移（更真实）
+            if np.random.rand() < 0.5:
+                cm_beta = np.random.uniform(0.05, 0.2)
+                cm = self._low_freq_noise(T, 1, cutoff=0.3)
+                data += cm_beta * np.mean(s_c) * cm
+
+        # ===== 4. 工频干扰（50Hz）=====
+        if np.random.rand() < self.p_powerline:
+            gamma = np.random.uniform(0.05, 0.2)
+            t = np.arange(T) / self.fs
+            phase = np.random.uniform(0, 2 * np.pi, size=C)
+            amp = gamma * s_c * np.random.uniform(0.8, 1.2, size=C)
+            powerline = np.sin(2 * np.pi * 50 * t[:, None] + phase) * amp
+            data += powerline
+
+        # ===== 5. 运动伪迹（瞬态）=====
+        if np.random.rand() < self.p_motion:
+            n_events = np.random.randint(1, 4)
+            for _ in range(n_events):
+                ch = np.random.randint(0, C)
+                t0 = np.random.randint(0, T - 20)
+                duration = np.random.randint(20, 80)
+                delta = np.random.uniform(0.5, 2.0) * s_c[ch]
+
+                envelope = np.exp(-np.linspace(0, 3, duration))
+                data[t0 : t0 + duration, ch] += delta * envelope[: T - t0]
+
+        return data
+
+    def _low_freq_noise(self, T, C, cutoff=0.5):
+        """生成低频噪声（白噪声 + 低通滤波）"""
+        noise = np.random.randn(T, C)
+        b, a = butter(2, cutoff / (self.fs / 2), btype="low")
+        return filtfilt(b, a, noise, axis=0)
